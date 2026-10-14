@@ -5,9 +5,9 @@ import streamlit as st
 st.title("🛡️ Credit Card Fraud Detector")
 
 # Load saved package and demo records
-pkg = joblib.load("fraud_model_package.pkl")
+pkg = joblib.load("fraud_model.pkl")
 model, features = pkg["model"], pkg["feature_names"]
-df = pd.read_csv("demo_transactions.csv")
+df = pd.read_csv("demo_data.csv")
 
 # Pick a test transaction
 idx = st.selectbox(
