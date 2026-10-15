@@ -1,56 +1,117 @@
 from pathlib import Path
 import joblib
+import numpy as np
 import pandas as pd
 import streamlit as st
 
-st.set_page_config(page_title="Credit Card Fraud Detector", page_icon="🛡️")
+st.set_page_config(page_title="Credit Card Fraud Checker", page_icon="💳")
 
-st.title("🛡️ Credit Card Fraud Detector")
-st.markdown("Real-time transaction risk scoring using **XGBoost**.")
+st.title("💳 Credit Card Transaction Checker")
+st.markdown(
+    "Enter transaction details below to verify if the charge is legitimate or"
+    " fraudulent."
+)
 
-# 1. Load files using absolute path
+# 1. Load Model and Scaler
 BASE_DIR = Path(__file__).parent
 model_file = BASE_DIR / "fraud_model.pkl"
-data_file = BASE_DIR / "demo_data.csv"
 
-if not model_file.exists() or not data_file.exists():
-  st.error("Missing 'fraud_model.pkl' or 'demo_data.csv' in repository root.")
+if not model_file.exists():
+  st.error("Cannot find 'fraud_model.pkl' in the repository root directory.")
   st.stop()
 
 pkg = joblib.load(model_file)
 model = pkg["model"]
+scaler = pkg["scaler"]
 features = pkg.get("features") or pkg.get("feature_names")
-df = pd.read_csv(data_file)
 
-# 2. UI - Pick a transaction
-st.subheader("Select a Test Transaction")
-label_col = "Actual_Label" if "Actual_Label" in df.columns else "Label"
+# 2. User Input Form
+with st.form("transaction_form"):
+  col1, col2 = st.columns(2)
 
-idx = st.selectbox(
-    "Choose Record:",
-    range(len(df)),
-    format_func=lambda i: f"Transaction #{i+1} — Ground Truth: {df.iloc[i].get(label_col, 'N/A')}",
-)
+  with col1:
+    amount = st.number_input(
+        "Transaction Amount ($):",
+        min_value=0.01,
+        max_value=50000.0,
+        value=25.00,
+        step=5.0,
+        help="Enter the dollar value of the transaction.",
+    )
 
-row = df.iloc[idx]
+  with col2:
+    hour = st.slider(
+        "Hour of Transaction (0 to 23):",
+        min_value=0,
+        max_value=23,
+        value=14,
+        help="0 is Midnight, 12 is Noon, 18 is 6:00 PM.",
+    )
 
-col1, col2 = st.columns(2)
-with col1:
-  st.metric("Scaled Amount", f"{row.get('scaled_amount', 0):.2f}")
-with col2:
-  st.metric("Recorded Hour", f"{int(row.get('Hour', 0))}:00")
+  is_suspicious_profile = st.checkbox(
+      "Simulate suspicious / unusual device & card behavior",
+      value=False,
+      help=(
+          "Simulates anomalous PCA patterns on critical features (V14, V12,"
+          " V10) typically associated with stolen credentials."
+      ),
+  )
 
-# 3. Predict Button
-if st.button("Evaluate Fraud Risk", type="primary", use_container_width=True):
-  X_input = row[features].to_frame().T
+  submit = st.form_submit_button(
+      "Check Transaction", type="primary", use_container_width=True
+  )
+
+# 3. Process & Predict
+if submit:
+  # Scale Amount using the fitted RobustScaler
+  scaled_amt = scaler.transform([[amount]])[0][0]
+
+  # Initialize all features to 0.0 (PCA neutral mean)
+  input_data = {feat: 0.0 for feat in features}
+
+  # Assign scaled amount and hour
+  input_data["scaled_amount"] = scaled_amt
+  if "Hour" in input_data:
+    input_data["Hour"] = hour
+
+  # If suspicious profile is checked, shift the top discriminative fraud features
+  if is_suspicious_profile:
+    if "V14" in input_data:
+      input_data["V14"] = -7.5
+    if "V12" in input_data:
+      input_data["V12"] = -6.2
+    if "V10" in input_data:
+      input_data["V10"] = -5.0
+    if "V4" in input_data:
+      input_data["V4"] = 4.5
+
+  # Build DataFrame in exact feature order
+  X_input = pd.DataFrame([input_data])[features]
+
+  # Model Prediction
   prob = float(model.predict_proba(X_input)[0][1])
 
   st.write("---")
-  st.progress(prob)
+  st.subheader("Transaction Analysis Result")
 
+  col_res1, col_res2 = st.columns(2)
+  with col_res1:
+    st.metric("Raw Amount", f"${amount:.2f}")
+    st.metric("Transformed Scaled Amount", f"{scaled_amt:.4f}")
+  with col_res2:
+    st.metric("Time of Day", f"{hour:02d}:00")
+    st.metric("Calculated Fraud Risk", f"{prob * 100:.2f}%")
+
+  # Decision Threshold (0.30)
   if prob >= 0.30:
-    st.error(f"🚨 **FLAGGED AS FRAUD** (Risk Score: {prob*100:.2f}%)")
-    st.caption("Action: Block transaction and request OTP authentication.")
+    st.error(f"🚨 **STATUS: FRAUDULENT TRANSACTION DETECTED**")
+    st.warning(
+        f"The risk score of {prob * 100:.1f}% exceeds the security threshold"
+        " (30%). Transaction has been blocked."
+    )
   else:
-    st.success(f"✅ **TRANSACTION APPROVED** (Risk Score: {prob*100:.2f}%)")
-    st.caption("Action: Normal transaction density verified. Proceed.")
+    st.success(f"✅ **STATUS: TRANSACTION IS LEGITIMATE**")
+    st.info(
+        f"The risk score is {prob * 100:.1f}%, which is well within normal"
+        " operating parameters. Approved for settlement."
+    )
